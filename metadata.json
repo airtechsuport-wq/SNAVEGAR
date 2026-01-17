@@ -1,0 +1,9 @@
+{
+  "name": "SNavegar",
+  "description": "Um PWA para operações diárias de entrega, substituindo agendas de papel por um fluxo de trabalho digital limpo.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone",
+    "geolocation"
+  ]
+}
