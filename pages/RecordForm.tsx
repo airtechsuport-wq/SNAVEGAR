@@ -1,20 +1,24 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { Save, CheckCircle, Camera, X, Loader2, AlertTriangle, LogIn } from 'lucide-react';
+import { Save, CheckCircle, Camera, X, Loader2, AlertTriangle, LogIn, Recycle, WifiOff, Truck, TrendingUp, Package } from 'lucide-react';
 import { DailyRecord } from '../types';
 import { recordService } from '../services/recordService';
 import { supabase } from '../services/supabaseClient';
 import { useRecords } from '../contexts/RecordContext';
+// @ts-ignore
+import imageCompression from 'browser-image-compression';
 
 const TEAMS = [
-  "Equipe 1 - Luiz e Luigi",
-  "Equipe 2 - David e Ruben"
+  "Loures 01",
+  "Loures 02",
+  "Barreiro 01",
+  "Samora Correia 01"
 ];
 
 const RecordForm: React.FC = () => {
   const navigate = useNavigate();
   const { id } = useParams();
-  const { refreshRecords } = useRecords(); // Pegar função de atualizar contexto
+  const { refreshRecords } = useRecords();
   const [loading, setLoading] = useState(false);
   const [processingImage, setProcessingImage] = useState(false);
   const [userEmail, setUserEmail] = useState<string | null>(null);
@@ -32,6 +36,8 @@ const RecordForm: React.FC = () => {
     articles_delivered: 0,
     articles_not_delivered: 0,
     reason_not_delivered: '',
+    scraps_collected: 0,
+    scrap_client_names: '',
     fueling: false,
     fuel_amount: 0,
     toll_amount: 0,
@@ -43,7 +49,13 @@ const RecordForm: React.FC = () => {
   // Check Auth on Mount
   useEffect(() => {
     const checkUser = async () => {
-        if (!supabase) return;
+        // MODO OFFLINE: Simula usuário se não houver Supabase configurado
+        if (!supabase) {
+            setUserEmail('offline@snavegar.local');
+            setAuthChecking(false);
+            return;
+        }
+
         const { data: { session } } = await supabase.auth.getSession();
         if (session?.user) {
             setUserEmail(session.user.email || 'Usuário');
@@ -77,42 +89,21 @@ const RecordForm: React.FC = () => {
     setFormData(prev => ({ ...prev, [field]: value }));
   };
 
-  const compressImageToBlob = (file: File): Promise<Blob> => {
-    return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.readAsDataURL(file);
-        reader.onload = (event) => {
-            const img = new Image();
-            img.src = event.target?.result as string;
-            img.onload = () => {
-                const canvas = document.createElement('canvas');
-                const scaleFactor = 1024 / img.width;
-                const newWidth = scaleFactor < 1 ? 1024 : img.width;
-                const newHeight = scaleFactor < 1 ? img.height * scaleFactor : img.height;
-                
-                canvas.width = newWidth;
-                canvas.height = newHeight;
-                const ctx = canvas.getContext('2d');
-                ctx?.drawImage(img, 0, 0, newWidth, newHeight);
-                canvas.toBlob((blob) => {
-                    if (blob) resolve(blob);
-                    else reject(new Error("Conversion failed"));
-                }, 'image/jpeg', 0.8);
-            };
-            img.onerror = (err) => reject(err);
-        };
-        reader.onerror = (err) => reject(err);
-    });
-  };
-
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
       const file = e.target.files[0];
       setProcessingImage(true);
       
       try {
-        const compressedBlob = await compressImageToBlob(file);
-        const publicUrl = await recordService.uploadImage(compressedBlob);
+        const options = {
+          maxSizeMB: 1,
+          maxWidthOrHeight: 1920,
+          useWebWorker: true,
+          fileType: "image/jpeg"
+        };
+        
+        const compressedFile = await imageCompression(file, options);
+        const publicUrl = await recordService.uploadImage(compressedFile);
         
         if (publicUrl) {
            setFormData(prev => ({
@@ -120,9 +111,9 @@ const RecordForm: React.FC = () => {
             attachments: [...(prev.attachments || []), publicUrl]
           }));
         } else {
-            alert("Upload falhou (Modo Offline). A foto será salva apenas neste dispositivo.");
+            // Fallback para Base64 em modo offline
             const reader = new FileReader();
-            reader.readAsDataURL(compressedBlob);
+            reader.readAsDataURL(compressedFile);
             reader.onloadend = () => {
                  setFormData(prev => ({
                     ...prev,
@@ -131,7 +122,8 @@ const RecordForm: React.FC = () => {
             };
         }
       } catch (err) {
-        alert("Erro ao processar imagem.");
+        console.error("Erro na compressão:", err);
+        alert("Erro ao processar imagem. Tente uma imagem menor.");
       } finally {
         setProcessingImage(false);
       }
@@ -166,12 +158,12 @@ const RecordForm: React.FC = () => {
         } else {
             await recordService.create(dataToSave);
         }
-        await refreshRecords(); // Atualiza a memória global para que a lista esteja pronta
+        await refreshRecords();
         navigate('/');
     } catch (error: any) {
         console.error(error);
         if (error.message === "LOGIN_REQUIRED") {
-            alert("Sua sessão expirou. O registro foi salvo localmente, mas você precisa fazer login novamente para enviar para a equipe.");
+            alert("Sua sessão expirou.");
             navigate('/login');
         } else {
             alert("Erro ao salvar. Verifique sua conexão.");
@@ -182,20 +174,22 @@ const RecordForm: React.FC = () => {
   };
 
   return (
-    <div className="pb-10">
+    <div className="pb-24 animate-fade-in">
       {/* Auth Status Warning */}
       {!authChecking && !userEmail && (
-        <div className="bg-red-50 border-l-4 border-red-500 p-4 mb-6 rounded-r-lg shadow-sm">
+        <div className="bg-danger/10 border border-danger/20 p-6 mb-8 rounded-3xl shadow-soft">
             <div className="flex items-start">
-                <AlertTriangle className="text-red-500 mr-3 mt-0.5" size={20} />
+                <div className="bg-danger text-white p-2 rounded-xl mr-4">
+                  <AlertTriangle size={24} />
+                </div>
                 <div>
-                    <h3 className="text-red-800 font-bold">Você está desconectado!</h3>
-                    <p className="text-red-700 text-sm mt-1">Seus registros não aparecerão para a equipe se você não estiver logado.</p>
+                    <h3 className="text-danger font-bold text-lg">Você está desconectado!</h3>
+                    <p className="text-danger/70 text-sm mt-1 leading-relaxed">Seus registros não serão sincronizados com a equipe até que você faça login.</p>
                     <button 
                         onClick={() => navigate('/login')}
-                        className="mt-2 bg-red-600 text-white px-4 py-2 rounded-lg text-sm font-bold flex items-center space-x-2"
+                        className="mt-4 bg-danger text-white px-6 py-2.5 rounded-2xl text-sm font-bold flex items-center space-x-2 shadow-lg shadow-danger/20 active:scale-95 transition-all"
                     >
-                        <LogIn size={16} />
+                        <LogIn size={18} />
                         <span>Fazer Login Agora</span>
                     </button>
                 </div>
@@ -203,32 +197,45 @@ const RecordForm: React.FC = () => {
         </div>
       )}
 
-      <div className="flex items-center justify-between mb-6">
-          <h2 className="text-2xl font-bold text-gray-800">{id ? 'Editar Registro' : 'Novo Registro'}</h2>
+      <div className="flex items-end justify-between mb-8 px-1">
+          <div className="space-y-1">
+            <h2 className="text-3xl font-black text-gray-900 tracking-tight">{id ? 'Editar' : 'Novo'} Registro</h2>
+            <p className="text-sm text-gray-400 font-medium">Preencha os dados da operação</p>
+          </div>
+          
           {userEmail && (
-              <span className="text-xs bg-green-100 text-green-800 px-2 py-1 rounded-full border border-green-200">
-                  Logado: {userEmail.split('@')[0]}
-              </span>
+             <div className="flex items-center space-x-3 bg-white p-2 rounded-2xl shadow-soft border border-gray-50">
+                {!supabase && <WifiOff size={16} className="text-orange-500 ml-1" />}
+                <div className={`text-[10px] font-black uppercase tracking-widest px-3 py-1.5 rounded-xl border ${!supabase ? 'bg-orange-50 text-orange-700 border-orange-100' : 'bg-primary-50 text-primary-700 border-primary-100'}`}>
+                    {userEmail.split('@')[0]}
+                </div>
+             </div>
           )}
       </div>
       
-      <div className="space-y-6">
+      <div className="space-y-8">
         {/* Section 1: General */}
-        <div className="bg-white p-5 rounded-xl shadow-sm border border-gray-100">
-          <h3 className="text-lg font-semibold text-primary mb-4 border-b pb-2">Informações Gerais</h3>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-sm text-gray-600 mb-1">Data</label>
+        <div className="bg-white p-6 rounded-[2rem] shadow-soft border border-gray-50">
+          <div className="flex items-center space-x-3 mb-6">
+            <div className="bg-primary-50 p-2 rounded-xl text-primary-600">
+              <CheckCircle size={20} />
+            </div>
+            <h3 className="text-lg font-bold text-gray-900">Informações Gerais</h3>
+          </div>
+          
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="space-y-1.5">
+              <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider ml-1">Data da Operação</label>
               <input type="date" className="input-field" value={formData.date} onChange={e => handleChange('date', e.target.value)} />
             </div>
-            <div>
-              <label className="block text-sm text-gray-600 mb-1">Hora de Início</label>
+            <div className="space-y-1.5">
+              <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider ml-1">Hora de Início</label>
               <input type="time" className="input-field" value={formData.start_time} onChange={e => handleChange('start_time', e.target.value)} />
             </div>
-            <div>
-              <label className="block text-sm text-gray-600 mb-1">Nome da Equipe</label>
+            <div className="space-y-1.5">
+              <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider ml-1">Equipe Responsável</label>
               <select 
-                className="input-field" 
+                className="input-field appearance-none" 
                 value={formData.team} 
                 onChange={e => handleChange('team', e.target.value)}
               >
@@ -238,99 +245,160 @@ const RecordForm: React.FC = () => {
                 ))}
               </select>
             </div>
-            <div>
-              <label className="block text-sm text-gray-600 mb-1">Placa da Van</label>
-              <input type="text" placeholder="AA-00-BB" className="input-field uppercase" value={formData.van_plate} onChange={e => handleChange('van_plate', e.target.value)} />
+            <div className="space-y-1.5">
+              <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider ml-1">Placa do Veículo</label>
+              <input type="text" placeholder="Ex: AA-00-BB" className="input-field uppercase placeholder:text-gray-200" value={formData.van_plate} onChange={e => handleChange('van_plate', e.target.value)} />
             </div>
           </div>
         </div>
 
         {/* Section 2: Kilometers */}
-        <div className="bg-white p-5 rounded-xl shadow-sm border border-gray-100">
-          <h3 className="text-lg font-semibold text-primary mb-4 border-b pb-2">Quilometragem</h3>
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="block text-sm text-gray-600 mb-1">KM Inicial</label>
+        <div className="bg-white p-6 rounded-[2rem] shadow-soft border border-gray-50">
+          <div className="flex items-center space-x-3 mb-6">
+            <div className="bg-primary-50 p-2 rounded-xl text-primary-600">
+              <Truck size={20} />
+            </div>
+            <h3 className="text-lg font-bold text-gray-900">Quilometragem</h3>
+          </div>
+
+          <div className="grid grid-cols-2 gap-6">
+            <div className="space-y-1.5">
+              <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider ml-1">KM Inicial</label>
               <input 
                 type="text" 
                 inputMode="decimal"
-                className="input-field" 
+                className="input-field text-center font-bold text-lg" 
                 value={formData.km_start} 
                 onChange={e => handleChange('km_start', e.target.value)} 
                 placeholder="0"
               />
             </div>
-            <div>
-              <label className="block text-sm text-gray-600 mb-1">KM Final</label>
+            <div className="space-y-1.5">
+              <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider ml-1">KM Final</label>
               <input 
                 type="text" 
                 inputMode="decimal"
-                className="input-field" 
+                className="input-field text-center font-bold text-lg" 
                 value={formData.km_end} 
                 onChange={e => handleChange('km_end', e.target.value)} 
                 placeholder="0"
               />
             </div>
           </div>
-          <div className="mt-4 bg-gray-50 p-3 rounded-lg flex justify-between items-center">
-            <span className="font-medium text-gray-700">Distância Total:</span>
-            <span className="font-bold text-xl text-primary">{formData.km_total} km</span>
+          
+          <div className="mt-8 bg-primary-600 rounded-2xl p-5 flex justify-between items-center shadow-lg shadow-primary-100">
+            <div className="flex items-center space-x-3">
+              <div className="bg-white/20 p-2 rounded-xl">
+                <TrendingUp className="text-white" size={20} />
+              </div>
+              <span className="font-bold text-white uppercase tracking-widest text-xs">Total Percorrido</span>
+            </div>
+            <span className="font-black text-2xl text-white">{formData.km_total} <span className="text-sm font-bold opacity-60">km</span></span>
           </div>
         </div>
 
-        {/* Section 3: Articles */}
-        <div className="bg-white p-5 rounded-xl shadow-sm border border-gray-100">
-          <h3 className="text-lg font-semibold text-primary mb-4 border-b pb-2">Artigos</h3>
-          <div className="grid grid-cols-3 gap-3">
-             <div className="col-span-3 md:col-span-1">
-                <label className="block text-sm text-gray-600 mb-1">Carregados</label>
-                <input type="number" inputMode="numeric" className="input-field" value={formData.articles_loaded} onChange={e => handleChange('articles_loaded', parseInt(e.target.value))} />
+        {/* Section 3: Articles & Scrap */}
+        <div className="bg-white p-6 rounded-[2rem] shadow-soft border border-gray-50">
+          <div className="flex items-center space-x-3 mb-6">
+            <div className="bg-primary-50 p-2 rounded-xl text-primary-600">
+              <Package size={20} />
+            </div>
+            <h3 className="text-lg font-bold text-gray-900">Carga e Entregas</h3>
+          </div>
+
+          <div className="grid grid-cols-3 gap-4 mb-8">
+             <div className="col-span-3 md:col-span-1 space-y-1.5">
+                <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider ml-1">Carregados</label>
+                <input type="number" inputMode="numeric" className="input-field text-center font-bold" value={formData.articles_loaded} onChange={e => handleChange('articles_loaded', parseInt(e.target.value))} />
              </div>
-             <div>
-                <label className="block text-sm text-gray-600 mb-1">Entregues</label>
-                <input type="number" inputMode="numeric" className="input-field text-green-600 font-medium" value={formData.articles_delivered} onChange={e => handleChange('articles_delivered', parseInt(e.target.value))} />
+             <div className="space-y-1.5">
+                <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider ml-1">Entregues</label>
+                <input type="number" inputMode="numeric" className="input-field text-center font-bold text-success bg-green-50/30 border-green-100" value={formData.articles_delivered} onChange={e => handleChange('articles_delivered', parseInt(e.target.value))} />
              </div>
-             <div>
-                <label className="block text-sm text-gray-600 mb-1">Falhas</label>
-                <input type="number" inputMode="numeric" className="input-field text-red-500 font-medium" value={formData.articles_not_delivered} onChange={e => handleChange('articles_not_delivered', parseInt(e.target.value))} />
+             <div className="space-y-1.5">
+                <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider ml-1">Falhas</label>
+                <input type="number" inputMode="numeric" className="input-field text-center font-bold text-danger bg-red-50/30 border-red-100" value={formData.articles_not_delivered} onChange={e => handleChange('articles_not_delivered', parseInt(e.target.value))} />
              </div>
           </div>
           
           {(formData.articles_not_delivered || 0) > 0 && (
-            <div className="mt-4">
-                <label className="block text-sm text-red-600 font-medium mb-1">Motivo das falhas</label>
+            <div className="mb-8 animate-fade-in space-y-1.5">
+                <label className="block text-xs font-bold text-danger uppercase tracking-wider ml-1">Motivo das Falhas</label>
                 <textarea 
-                    className="input-field min-h-[80px]" 
-                    placeholder="Ex: Cliente ausente, endereço errado..." 
+                    className="input-field min-h-[80px] border-red-100 focus:ring-red-50 focus:border-red-200" 
+                    placeholder="Descreva o que aconteceu..." 
                     value={formData.reason_not_delivered}
                     onChange={e => handleChange('reason_not_delivered', e.target.value)}
                 />
             </div>
           )}
+
+          {/* New Scrap Collection Section */}
+          <div className="border-t border-gray-50 pt-8">
+            <div className="flex items-center space-x-3 mb-6">
+                <div className="bg-orange-50 p-2 rounded-xl text-orange-600">
+                  <Recycle size={20} />
+                </div>
+                <h3 className="text-lg font-bold text-gray-900">Recolha de Sucata</h3>
+            </div>
+            
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="space-y-1.5">
+                     <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider ml-1">Quantidade</label>
+                     <input 
+                        type="number" 
+                        inputMode="numeric"
+                        placeholder="0"
+                        className="input-field border-orange-100 focus:border-orange-300 focus:ring-orange-50 text-orange-700 font-bold" 
+                        value={formData.scraps_collected} 
+                        onChange={e => handleChange('scraps_collected', parseInt(e.target.value))} 
+                     />
+                </div>
+                
+                {(formData.scraps_collected || 0) > 0 && (
+                     <div className="animate-fade-in space-y-1.5">
+                        <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider ml-1">Nomes dos Clientes</label>
+                        <textarea 
+                            className="input-field min-h-[80px] border-orange-100 focus:border-orange-300 focus:ring-orange-50" 
+                            placeholder="Ex: Sr. João, Loja ABC..." 
+                            value={formData.scrap_client_names}
+                            onChange={e => handleChange('scrap_client_names', e.target.value)}
+                        />
+                     </div>
+                )}
+            </div>
+          </div>
         </div>
 
         {/* Section 4: Expenses */}
-        <div className="bg-white p-5 rounded-xl shadow-sm border border-gray-100">
-          <h3 className="text-lg font-semibold text-primary mb-4 border-b pb-2">Despesas</h3>
+        <div className="bg-white p-6 rounded-[2rem] shadow-soft border border-gray-50">
+          <div className="flex items-center space-x-3 mb-6">
+            <div className="bg-primary-50 p-2 rounded-xl text-primary-600">
+              <TrendingUp size={20} />
+            </div>
+            <h3 className="text-lg font-bold text-gray-900">Despesas e Custos</h3>
+          </div>
           
-          <div className="flex items-center mb-4">
-            <input 
-                type="checkbox" 
-                id="fueling" 
-                checked={formData.fueling} 
-                onChange={e => handleChange('fueling', e.target.checked)}
-                className="w-5 h-5 text-primary rounded focus:ring-primary bg-white border-gray-300"
-            />
-            <label htmlFor="fueling" className="ml-2 text-gray-700 font-medium">Abasteceu hoje?</label>
+          <div className="flex items-center mb-6 bg-gray-50/50 p-4 rounded-2xl border border-gray-50">
+            <div className="relative flex items-center cursor-pointer">
+              <input 
+                  type="checkbox" 
+                  id="fueling" 
+                  checked={formData.fueling} 
+                  onChange={e => handleChange('fueling', e.target.checked)}
+                  className="w-6 h-6 text-primary-600 rounded-lg focus:ring-primary-100 bg-white border-gray-200 transition-all cursor-pointer"
+              />
+              <label htmlFor="fueling" className="ml-3 text-gray-700 font-bold cursor-pointer">Abastecimento realizado?</label>
+            </div>
           </div>
 
           {formData.fueling && (
-            <div className="mb-4 pl-7">
-                 <label className="block text-sm text-gray-600 mb-1">Valor do Combustível (€)</label>
+            <div className="mb-6 animate-fade-in space-y-1.5">
+                 <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider ml-1">Valor do Combustível (€)</label>
                  <input 
                     type="text" 
                     inputMode="decimal"
-                    className="input-field" 
+                    className="input-field font-bold text-primary-700" 
                     placeholder="0.00"
                     value={formData.fuel_amount} 
                     onChange={e => handleChange('fuel_amount', e.target.value)}
@@ -338,12 +406,12 @@ const RecordForm: React.FC = () => {
             </div>
           )}
 
-          <div className="mt-4 border-t pt-4">
-             <label className="block text-sm text-gray-600 mb-1">Pedágios (€)</label>
+          <div className="space-y-1.5">
+             <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider ml-1">Pedágios / Portagens (€)</label>
              <input 
                 type="text" 
                 inputMode="decimal"
-                className="input-field" 
+                className="input-field font-bold text-primary-700" 
                 placeholder="0.00"
                 value={formData.toll_amount} 
                 onChange={e => handleChange('toll_amount', e.target.value)}
@@ -352,25 +420,41 @@ const RecordForm: React.FC = () => {
         </div>
 
          {/* Section 5: Attachments */}
-         <div className="bg-white p-5 rounded-xl shadow-sm border border-gray-100">
-            <h3 className="text-lg font-semibold text-primary mb-4 border-b pb-2">Fotos</h3>
+         <div className="bg-white p-6 rounded-[2rem] shadow-soft border border-gray-50">
+            <div className="flex items-center space-x-3 mb-6">
+              <div className="bg-primary-50 p-2 rounded-xl text-primary-600">
+                <Camera size={20} />
+              </div>
+              <h3 className="text-lg font-bold text-gray-900">Fotos e Comprovantes</h3>
+            </div>
             
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-4">
                 {formData.attachments?.map((src, idx) => (
-                    <div key={idx} className="relative group aspect-square rounded-lg overflow-hidden border border-gray-200 bg-white">
+                    <div key={idx} className="relative group aspect-square rounded-[1.5rem] overflow-hidden border border-gray-100 bg-gray-50 shadow-sm animate-fade-in">
                         <img src={src} alt="attachment" className="w-full h-full object-cover" />
                         <button 
                             onClick={() => removeAttachment(idx)}
-                            className="absolute top-1 right-1 bg-red-500 text-white rounded-full p-1 shadow-md"
+                            className="absolute top-2 right-2 bg-danger text-white rounded-xl p-2 shadow-lg active:scale-90 transition-all"
                         >
-                            <X size={14} />
+                            <X size={16} />
                         </button>
                     </div>
                 ))}
                 
-                <label className={`aspect-square rounded-lg border-2 border-dashed border-gray-300 flex flex-col items-center justify-center text-gray-400 hover:border-primary hover:text-primary cursor-pointer transition-colors bg-white ${processingImage ? 'opacity-50 cursor-not-allowed' : ''}`}>
-                    {processingImage ? <Loader2 className="animate-spin" size={24} /> : <Camera size={24} />}
-                    <span className="text-xs mt-1">{processingImage ? 'Enviando...' : 'Adicionar Foto'}</span>
+                <label className={`aspect-square rounded-[1.5rem] border-2 border-dashed border-gray-100 flex flex-col items-center justify-center text-gray-300 hover:border-primary-300 hover:text-primary-600 hover:bg-primary-50/30 cursor-pointer transition-all bg-gray-50/30 ${processingImage ? 'opacity-50 cursor-not-allowed' : ''}`}>
+                    {processingImage ? (
+                      <div className="flex flex-col items-center">
+                        <Loader2 className="animate-spin text-primary-600" size={32} />
+                        <span className="text-[10px] font-bold uppercase tracking-widest mt-3">Processando</span>
+                      </div>
+                    ) : (
+                      <>
+                        <div className="bg-white p-3 rounded-2xl shadow-sm mb-2">
+                          <Save size={24} />
+                        </div>
+                        <span className="text-[10px] font-bold uppercase tracking-widest">Adicionar</span>
+                      </>
+                    )}
                     <input 
                         type="file" 
                         accept="image/*" 
@@ -383,52 +467,65 @@ const RecordForm: React.FC = () => {
          </div>
 
          {/* Section 6: Notes */}
-         <div className="bg-white p-5 rounded-xl shadow-sm border border-gray-100">
-            <h3 className="text-lg font-semibold text-primary mb-4 border-b pb-2">Observações</h3>
+         <div className="bg-white p-6 rounded-[2rem] shadow-soft border border-gray-50">
+            <div className="flex items-center space-x-3 mb-6">
+              <div className="bg-primary-50 p-2 rounded-xl text-primary-600">
+                <AlertTriangle size={20} />
+              </div>
+              <h3 className="text-lg font-bold text-gray-900">Observações</h3>
+            </div>
             <textarea 
-                className="input-field min-h-[100px]" 
-                placeholder="Incidentes, observações ou comentários..."
+                className="input-field min-h-[120px] leading-relaxed" 
+                placeholder="Algum incidente ou observação importante?"
                 value={formData.notes}
                 onChange={e => handleChange('notes', e.target.value)}
             />
          </div>
 
          {/* Actions */}
-         <div className="flex space-x-4 pt-4">
+         <div className="flex flex-col sm:flex-row gap-4 pt-6">
              <button 
                 onClick={() => handleSubmit('draft')}
                 disabled={loading || processingImage}
-                className="flex-1 py-4 rounded-xl bg-gray-200 text-gray-700 font-bold hover:bg-gray-300 transition-colors flex items-center justify-center space-x-2"
+                className="flex-1 py-5 rounded-2xl bg-white border border-gray-100 text-gray-500 font-bold hover:bg-gray-50 transition-all flex items-center justify-center space-x-3 shadow-soft active:scale-[0.98]"
             >
-                <Save size={20} />
+                <Save size={22} />
                 <span>Salvar Rascunho</span>
              </button>
              <button 
                 onClick={() => handleSubmit('finalized')}
                 disabled={loading || processingImage}
-                className="flex-1 py-4 rounded-xl bg-primary text-white font-bold hover:bg-blue-700 transition-colors shadow-lg flex items-center justify-center space-x-2"
+                className="flex-[1.5] py-5 rounded-2xl bg-primary-600 text-white font-black uppercase tracking-widest text-sm hover:bg-primary-700 transition-all shadow-lg shadow-primary-200 flex items-center justify-center space-x-3 active:scale-[0.98]"
             >
-                {loading ? <Loader2 className="animate-spin" size={20}/> : <CheckCircle size={20} />}
-                <span>Finalizar Dia</span>
+                {loading ? <Loader2 className="animate-spin" size={22}/> : <CheckCircle size={22} />}
+                <span>Finalizar Operação</span>
             </button>
          </div>
       </div>
-
       <style>{`
         .input-field {
             width: 100%;
-            padding: 0.75rem;
-            border-radius: 0.5rem;
-            border: 1px solid #e2e8f0;
+            padding: 1rem;
+            border-radius: 1.25rem;
+            border: 1px solid #f1f5f9;
             outline: none;
-            transition: all;
+            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
             font-size: 1rem;
-            background-color: #ffffff;
-            color: #1f2937;
+            background-color: #f8fafc;
+            color: #1e293b;
+            font-weight: 500;
         }
         .input-field:focus {
+            background-color: #ffffff;
             border-color: #3b82f6;
-            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+            box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.08);
+        }
+        .animate-fade-in {
+            animation: fadeIn 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
         }
       `}</style>
     </div>

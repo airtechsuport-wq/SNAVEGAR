@@ -38,6 +38,25 @@ export const RecordProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     return () => window.removeEventListener('focus', onFocus);
   }, [refreshRecords]);
 
+  // --- MELHORIA 3: Sincronização Automática (Network Listener) ---
+  useEffect(() => {
+    const handleOnline = async () => {
+        console.log("🌐 Conexão detectada! Iniciando sincronização automática...");
+        try {
+            const result = await recordService.syncPendingRecords();
+            if (result.count > 0) {
+                console.log(`✅ Sincronização automática: ${result.count} registros enviados.`);
+                await refreshRecords(); // Atualiza a UI para mostrar os ícones verdes
+            }
+        } catch (e) {
+            console.error("Erro na sincronização automática:", e);
+        }
+    };
+
+    window.addEventListener('online', handleOnline);
+    return () => window.removeEventListener('online', handleOnline);
+  }, [refreshRecords]);
+
   return (
     <RecordContext.Provider value={{ records, loading, refreshRecords }}>
       {children}

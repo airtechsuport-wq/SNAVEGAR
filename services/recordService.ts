@@ -18,7 +18,6 @@ const openDB = (): Promise<IDBDatabase> => {
     request.onupgradeneeded = (event) => {
       const db = (event.target as IDBOpenDBRequest).result;
       if (!db.objectStoreNames.contains(STORE_NAME)) {
-        // Cria a "tabela" local usando 'id' como chave primária
         db.createObjectStore(STORE_NAME, { keyPath: 'id' });
       }
     };
@@ -29,30 +28,35 @@ const openDB = (): Promise<IDBDatabase> => {
   });
 };
 
-// Salva um único registro no IndexedDB
 const saveLocalRecord = async (record: DailyRecord) => {
   const db = await openDB();
   return new Promise<void>((resolve, reject) => {
     const transaction = db.transaction([STORE_NAME], 'readwrite');
     const store = transaction.objectStore(STORE_NAME);
     const request = store.put(record); 
-
-    // IMPORTANTE: Aguarda a transação completar totalmente antes de resolver.
-    // Isso garante que os dados estão no disco antes de a UI tentar lê-los.
     transaction.oncomplete = () => resolve();
     transaction.onerror = () => reject("Erro na transação de salvamento local");
     request.onerror = () => reject("Erro na requisição de salvamento local");
   });
 };
 
-// Busca todos os registros locais
+const deleteLocalRecord = async (id: string) => {
+  const db = await openDB();
+  return new Promise<void>((resolve, reject) => {
+    const transaction = db.transaction([STORE_NAME], 'readwrite');
+    const store = transaction.objectStore(STORE_NAME);
+    const request = store.delete(id);
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject("Erro ao apagar registro local");
+  });
+};
+
 const getAllLocalRecords = async (): Promise<DailyRecord[]> => {
   const db = await openDB();
   return new Promise<DailyRecord[]>((resolve, reject) => {
     const transaction = db.transaction([STORE_NAME], 'readonly');
     const store = transaction.objectStore(STORE_NAME);
     const request = store.getAll();
-
     request.onsuccess = () => {
         const records = request.result as DailyRecord[];
         resolve(records || []);
@@ -61,25 +65,19 @@ const getAllLocalRecords = async (): Promise<DailyRecord[]> => {
   });
 };
 
-// Migração: Move dados do LocalStorage (Bolso) para IndexedDB (Mochila) e limpa o bolso
 const migrateLegacyData = async () => {
   const legacyData = localStorage.getItem(OLD_STORAGE_KEY);
   if (legacyData) {
     try {
       console.log("Iniciando migração de armazenamento...");
       const parsedData: DailyRecord[] = JSON.parse(legacyData);
-      
       const db = await openDB();
       const transaction = db.transaction([STORE_NAME], 'readwrite');
       const store = transaction.objectStore(STORE_NAME);
-
-      parsedData.forEach(record => {
-        store.put(record);
-      });
-
+      parsedData.forEach(record => store.put(record));
       transaction.oncomplete = () => {
         console.log("Migração concluída com sucesso!");
-        localStorage.removeItem(OLD_STORAGE_KEY); // Libera o localStorage
+        localStorage.removeItem(OLD_STORAGE_KEY);
       };
     } catch (e) {
       console.error("Erro na migração de dados:", e);
@@ -105,7 +103,6 @@ const safeFloat = (val: any): number => {
   return isNaN(num) ? 0 : num;
 };
 
-// Prepara o objeto para ser aceito pelo PostgreSQL sem erros
 const preparePayload = (record: DailyRecord, userId: string, userEmail?: string) => {
   return {
     id: record.id,
@@ -122,6 +119,8 @@ const preparePayload = (record: DailyRecord, userId: string, userEmail?: string)
     articles_delivered: safeFloat(record.articles_delivered),
     articles_not_delivered: safeFloat(record.articles_not_delivered),
     reason_not_delivered: record.reason_not_delivered || '',
+    scraps_collected: safeFloat(record.scraps_collected),
+    scrap_client_names: record.scrap_client_names || '',
     fueling: !!record.fueling,
     fuel_amount: safeFloat(record.fuel_amount),
     toll_amount: safeFloat(record.toll_amount),
@@ -145,8 +144,8 @@ export const recordService = {
         upsert: false 
       });
       if (error) {
-        console.error("Upload Error:", error);
-        return null;
+        console.error("Upload Error (Check bucket exists!):", error);
+        throw error; // Lança erro para ser tratado no nível acima
       }
       const { data: publicUrlData } = supabase.storage.from(BUCKET_NAME).getPublicUrl(data.path);
       return publicUrlData.publicUrl;
@@ -168,10 +167,19 @@ export const recordService = {
             const res = await fetch(att);
             const blob = await res.blob();
             const url = await this.uploadImage(blob);
-            return url || att; 
+            
+            if (url) return url;
+
+            // FAILSAFE IMPORTANTE: 
+            // Se o upload falhar (ex: bucket não existe), NÃO retorne o base64 original.
+            // Isso faria o payload estourar o limite do banco de dados.
+            // Retornamos um placeholder para garantir que o texto seja salvo.
+            console.warn("Imagem falhou no upload. Salvando placeholder para não perder dados.");
+            return "https://placehold.co/600x400?text=Erro+Upload+Imagem+(Verifique+Storage)";
+
         } catch (e) {
-            console.error("Falha ao processar imagem para sync:", e);
-            return att;
+            console.error("Falha fatal ao processar imagem:", e);
+            return "https://placehold.co/600x400?text=Erro+Processamento";
         }
       }
       return att;
@@ -179,48 +187,53 @@ export const recordService = {
     return processed;
   },
 
-  async syncPendingRecords(): Promise<number> {
-    if (!supabase) return 0;
+  // RETORNA UM OBJETO AGORA PARA DEBUG
+  async syncPendingRecords(): Promise<{count: number, error?: string}> {
+    if (!supabase) return { count: 0, error: "Supabase não configurado" };
     
-    // Tenta migrar dados legados antes do sync, por segurança
     await migrateLegacyData();
 
     const { data: { session } } = await supabase.auth.getSession();
-    if (!session?.user) return 0;
+    if (!session?.user) return { count: 0, error: "Usuário não logado" };
 
     const user = session.user;
     const localRecords = await getAllLocalRecords();
     const pending = localRecords.filter(r => r._isSynced === false);
 
-    if (pending.length === 0) return 0;
+    if (pending.length === 0) return { count: 0 };
 
     console.log(`Tentando sincronizar ${pending.length} registros...`);
     let syncedCount = 0;
+    let lastError = "";
 
     for (const record of pending) {
         try {
+            // Processa imagens (com failsafe agora)
             if (record.attachments && record.attachments.length > 0) {
                 const updatedAttachments = await this.processAttachmentsForSync(record.attachments);
                 record.attachments = updatedAttachments;
             }
 
+            // Garante que o ID do usuário é o atual (corrige registros offline antigos)
             const payload = preparePayload(record, user.id, user.email);
+            
             const { error } = await supabase.from('daily_records').upsert(payload);
             
             if (!error) {
-                // Atualiza localmente para marcar como sincronizado
                 const syncedRecord = { ...record, _isSynced: true };
                 await saveLocalRecord(syncedRecord);
                 syncedCount++;
             } else {
                 console.error("Sync Error Individual:", error.message);
+                lastError = `Erro no banco: ${error.message}`;
             }
-        } catch (err) {
+        } catch (err: any) {
             console.error("Sync Exception:", err);
+            lastError = `Erro crítico: ${err.message || err}`;
         }
     }
     
-    return syncedCount;
+    return { count: syncedCount, error: syncedCount === 0 ? lastError : undefined };
   },
 
   async getAll(): Promise<DailyRecord[]> {
@@ -229,49 +242,62 @@ export const recordService = {
     let serverRecords: DailyRecord[] = [];
     let isOffline = false;
     
-    // 2. Busca do Servidor
     if (supabase) {
       try {
-        const { data, error } = await supabase
-            .from('daily_records')
-            .select('*')
-            .order('date', { ascending: false })
-            .limit(100);
-            
-        if (error) {
-            console.warn("Supabase GET Error (Offline?):", error.message);
-            isOffline = true;
-        } else if (data) {
-          serverRecords = data.map(r => ({ ...r, _isSynced: true })) as DailyRecord[];
+        const { data: sessionData } = await supabase.auth.getSession();
+        
+        if (!sessionData.session) {
+             console.warn("Sem sessão ativa.");
+             isOffline = true;
+        } else {
+            const { data, error } = await supabase
+                .from('daily_records')
+                .select(`
+                    id, 
+                    date, 
+                    team, 
+                    van_plate, 
+                    created_by_email,
+                    km_total, 
+                    articles_delivered, 
+                    articles_not_delivered, 
+                    archived,
+                    scraps_collected,
+                    _isSynced: id
+                `) 
+                .order('date', { ascending: false })
+                .limit(100); 
+                
+            if (error) {
+                console.warn("Supabase GET Error:", error.message);
+                isOffline = true;
+            } else if (data) {
+                serverRecords = data.map(r => ({ ...r, _isSynced: true })) as unknown as DailyRecord[];
+            }
         }
       } catch (err) {
+        console.error("Exceção na busca do servidor:", err);
         isOffline = true;
       }
     }
     
-    // 3. Busca Local
     const localRecords = await getAllLocalRecords();
     
-    // 4. Merge Inteligente
     const finalMap = new Map<string, DailyRecord>();
+    localRecords.forEach(r => finalMap.set(r.id, r));
 
-    if (!isOffline) {
-        // Servidor tem prioridade, mas salvamos o que vem dele no cache local
-        for (const r of serverRecords) {
-           finalMap.set(r.id, r);
-           // Update cache in background without awaiting
-           saveLocalRecord(r).catch(e => console.warn("Cache update failed", e));
+    if (!isOffline && serverRecords.length > 0) {
+        for (const serverRecord of serverRecords) {
+           const localMatch = finalMap.get(serverRecord.id);
+           
+           if (localMatch) {
+               const merged = { ...localMatch, ...serverRecord, attachments: localMatch.attachments || [] };
+               finalMap.set(serverRecord.id, merged);
+           } else {
+               finalMap.set(serverRecord.id, serverRecord);
+               saveLocalRecord(serverRecord).catch(e => console.warn(e));
+           }
         }
-        
-        // Adiciona locais que ainda não subiram
-        localRecords.forEach(r => {
-            if (!finalMap.has(r.id) || !r._isSynced) {
-                finalMap.set(r.id, r);
-            }
-        });
-    } else {
-        // Offline: mostra tudo que tem local
-        localRecords.forEach(r => finalMap.set(r.id, r));
     }
 
     const merged = Array.from(finalMap.values())
@@ -293,40 +319,24 @@ export const recordService = {
     if (supabase) {
       try {
         const { data: { session } } = await supabase.auth.getSession();
-        
         if (session?.user) {
-          // Processa imagens se necessário
           if (newRecord.attachments && newRecord.attachments.some(a => a.startsWith('data:'))) {
              newRecord.attachments = await this.processAttachmentsForSync(newRecord.attachments);
           }
-
           const payload = preparePayload(newRecord, session.user.id, session.user.email);
           const { error } = await supabase.from('daily_records').insert(payload);
-          
-          if (!error) {
-            newRecord._isSynced = true;
-          } else {
-            console.error("Supabase Create Error:", error.message);
-            // Não damos throw aqui, deixamos salvar localmente com _isSynced=false
-          }
-        } else {
-             // Sem sessão, apenas salva local (offline mode ou fallback)
-             console.warn("User not logged in, saving locally only.");
+          if (!error) newRecord._isSynced = true;
         }
       } catch (err: any) {
         console.error("Create Exception:", err);
       }
     }
-
-    // Salva Localmente Sempre e espera a transação completar
     await saveLocalRecord(newRecord);
-
     return newRecord;
   },
 
   async update(id: string, updates: Partial<DailyRecord>): Promise<DailyRecord | null> {
     let updatedRecord: DailyRecord | null = null;
-    
     const localRecords = await getAllLocalRecords();
     const existing = localRecords.find(r => r.id === id);
 
@@ -346,36 +356,58 @@ export const recordService = {
                     cleanUpdates.attachments = await this.processAttachmentsForSync(cleanUpdates.attachments);
                     if (updatedRecord) updatedRecord.attachments = cleanUpdates.attachments;
                 }
-
+                
                 ['km_start', 'km_end', 'km_total', 'articles_loaded', 
                  'articles_delivered', 'articles_not_delivered', 
-                 'fuel_amount', 'toll_amount'].forEach(key => {
-                    if (cleanUpdates[key] !== undefined) {
-                        cleanUpdates[key] = safeFloat(cleanUpdates[key]);
-                    }
+                 'fuel_amount', 'toll_amount', 'scraps_collected'].forEach(key => {
+                    if (cleanUpdates[key] !== undefined) cleanUpdates[key] = safeFloat(cleanUpdates[key]);
                 });
 
                 const { error } = await supabase.from('daily_records').update(cleanUpdates).eq('id', id);
-                if (!error && updatedRecord) {
-                    updatedRecord._isSynced = true;
-                }
+                if (!error && updatedRecord) updatedRecord._isSynced = true;
             }
-        } catch (e) {
-            console.error("Update DB Error:", e);
-        }
+        } catch (e) { console.error(e); }
     }
 
-    if (updatedRecord) {
-        await saveLocalRecord(updatedRecord);
-    }
-    
+    if (updatedRecord) await saveLocalRecord(updatedRecord);
     return updatedRecord;
   },
 
-  async getById(id: string): Promise<DailyRecord | undefined> {
-    // Tenta cache local primeiro para velocidade
+  async delete(id: string): Promise<void> {
+    return this.deleteMultiple([id]);
+  },
+
+  async deleteMultiple(ids: string[]): Promise<void> {
+    if (!ids || ids.length === 0) return;
+    let allImagesToDelete: string[] = [];
     const localRecords = await getAllLocalRecords();
-    const local = localRecords.find(r => r.id === id);
+    
+    for (const id of ids) {
+        const record = localRecords.find(r => r.id === id);
+        if (record?.attachments?.length) {
+            record.attachments.forEach(url => {
+                 if (url.includes(BUCKET_NAME)) {
+                    const fileName = url.split(`${BUCKET_NAME}/`).pop();
+                    if (fileName) allImagesToDelete.push(fileName);
+                 }
+            });
+        }
+    }
+
+    if (supabase) {
+        try {
+            if (allImagesToDelete.length > 0) {
+                await supabase.storage.from(BUCKET_NAME).remove(allImagesToDelete);
+            }
+            await supabase.from('daily_records').delete().in('id', ids);
+        } catch (e) { console.error(e); }
+    }
+    for (const id of ids) await deleteLocalRecord(id);
+  },
+
+  async getById(id: string): Promise<DailyRecord | undefined> {
+    const localRecords = await getAllLocalRecords();
+    let local = localRecords.find(r => r.id === id);
 
     if (supabase) {
         try {
@@ -387,7 +419,6 @@ export const recordService = {
             }
         } catch (e) {}
     }
-    
     return local;
   }
 };

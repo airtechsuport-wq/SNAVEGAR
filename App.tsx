@@ -15,28 +15,56 @@ const App: React.FC = () => {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // Check active session
-    const checkSession = async () => {
-        if (supabase) {
-            const { data: { session } } = await supabase.auth.getSession();
-            setIsAuthenticated(!!session);
-        } else {
-             // Fallback for demo without Supabase keys
-             const localAuth = localStorage.getItem('snavegar_auth');
-             if (localAuth) setIsAuthenticated(true);
-        }
-        setLoading(false);
-    };
-    
-    checkSession();
+    const initApp = async () => {
+      console.log("🚀 Iniciando App com verificação de segurança...");
+      
+      // Promessa de Timeout: Rejeita se demorar mais de 2s
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('TIMEOUT_SUPABASE')), 2000)
+      );
 
-    // Listen for auth changes
-    const { data: authListener } = supabase?.auth.onAuthStateChange((_event, session) => {
-        setIsAuthenticated(!!session);
-    }) || { data: { subscription: { unsubscribe: () => {} } } };
+      try {
+        if (!supabase) {
+            console.warn("Supabase não configurado (URL inválida). Modo Offline ativo.");
+            throw new Error("Supabase não inicializado");
+        }
+
+        // Corrida: Quem responder primeiro ganha (O banco ou o relógio)
+        const { data } = await Promise.race([
+          supabase.auth.getSession(),
+          timeoutPromise
+        ]) as any;
+
+        if (data?.session) {
+          console.log("✅ Sessão válida encontrada.");
+          setIsAuthenticated(true);
+        } else {
+          console.log("ℹ️ Nenhuma sessão ativa.");
+          setIsAuthenticated(false);
+        }
+      } catch (error: any) {
+        console.warn("⚠️ Modo Offline:", error.message || error);
+        setIsAuthenticated(false);
+      } finally {
+        // GARANTIA ABSOLUTA QUE O LOADING VAI SUMIR
+        setLoading(false);
+      }
+    };
+
+    initApp();
+
+    // Listener de Auth (apenas se o supabase estiver configurado)
+    let authListener: any = null;
+    if (supabase) {
+        const { data } = supabase.auth.onAuthStateChange((event, session) => {
+            if (event === 'SIGNED_IN' && session) setIsAuthenticated(true);
+            if (event === 'SIGNED_OUT') setIsAuthenticated(false);
+        });
+        authListener = data;
+    }
 
     return () => {
-        authListener.subscription.unsubscribe();
+      if (authListener) authListener.subscription.unsubscribe();
     };
   }, []);
 
@@ -45,16 +73,29 @@ const App: React.FC = () => {
   };
 
   const handleLogout = async () => {
-    if (supabase) {
-        await supabase.auth.signOut();
-    } else {
-        localStorage.removeItem('snavegar_auth');
+    try {
+        if (supabase) await supabase.auth.signOut();
+    } catch (e) {
+        console.error("Erro ao sair (possível offline):", e);
     }
     setIsAuthenticated(false);
   };
 
   if (loading) {
-      return <div className="min-h-screen flex items-center justify-center bg-gray-50 text-primary">Loading...</div>;
+      return (
+        <div className="min-h-screen flex flex-col items-center justify-center bg-surface text-primary animate-fade-in">
+            <div className="relative w-20 h-20 mb-8">
+                <div className="absolute inset-0 border-4 border-primary/10 rounded-full"></div>
+                <div className="absolute inset-0 border-4 border-primary border-t-transparent rounded-full animate-spin"></div>
+                <div className="absolute inset-4 bg-white rounded-full shadow-soft flex items-center justify-center">
+                    <div className="w-2 h-2 bg-primary rounded-full animate-pulse"></div>
+                </div>
+            </div>
+            <h1 className="text-2xl font-black tracking-tighter text-gray-900 mb-2">SNavegar</h1>
+            <span className="font-bold text-[10px] uppercase tracking-[0.2em] text-gray-400">Conectando ao sistema</span>
+            <p className="text-xs text-gray-400 mt-8 opacity-50">Se demorar, entraremos em modo offline.</p>
+        </div>
+      );
   }
 
   return (

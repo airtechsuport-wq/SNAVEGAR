@@ -13,6 +13,10 @@ export interface DailyRecord {
   articles_delivered: number;
   articles_not_delivered: number;
   reason_not_delivered: string;
+  // Novos campos de Sucata
+  scraps_collected: number;
+  scrap_client_names: string;
+  
   fueling: boolean;
   fuel_amount: number;
   toll_amount: number;
